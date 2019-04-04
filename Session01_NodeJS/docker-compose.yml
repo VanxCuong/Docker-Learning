@@ -1,0 +1,15 @@
+version: "3"
+services:
+  server:
+    build: ./server
+    restart: always
+    ports:
+      - 3000:3000
+    container_name: Session01_Server
+    volumes:
+      - ./Session01_NodeJS/:/data/Session01_NodeJS
+  mongo:
+    image: mongo
+    container_name: ReViewReview_mongo
+    volumes:
+      - /data/Session01_NodeJS/db:/data/db

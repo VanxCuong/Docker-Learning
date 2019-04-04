@@ -1,0 +1,218 @@
+version: "3"
+
+### Networks ###
+networks:
+  public-net:
+    driver: ${INTERNAL_NETWORKS_DRIVER:-bridge}
+  private-net:
+    driver: ${INTERNAL_NETWORKS_DRIVER:-bridge}
+
+### Volumes ###
+volumes:
+  mysql-dt:
+  redis-dt:
+  media-dt:
+  rabbitmq:
+  rethinkdb:
+
+### Services ###
+services:
+  ### S3 service ###
+  minio:
+    image: minio/minio
+    command: server /data
+    env_file:
+      - .env
+    environment:
+      MINIO_ACCESS_KEY: ${AWS_ACCESS_KEY_ID:-abcxyz123}
+      MINIO_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY:-abcxyz123}
+      VIRTUAL_HOST:     s3.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT:     9000
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - media-dt:/data
+
+  ### Redis service ###
+  redis:
+    image: redis:4-alpine
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - redis-dt:/data
+
+  ### Mysql service ###
+  db:
+    image: mysql:5.7
+    env_file:
+      - .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-secret}
+      MYSQL_USER:          ${DB_USERNAME:-homestead}
+      MYSQL_PASSWORD:      ${DB_PASSWORD:-secret}
+      MYSQL_DATABASE:      ${DB_DATABASE:-homestead}
+      TERM:                linux
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - mysql-dt:/var/lib/mysql
+      - .docker/initdb.d:/docker-entrypoint-initdb.d
+
+  ### RabbitMQ service ###
+  rabbitmq:
+    image: rabbitmq:3.7-management-alpine
+    env_file: .env
+    environment:
+      RABBITMQ_ERLANG_COOKIE: secret-cookie-here
+      RABBITMQ_DEFAULT_HOST:  rabbitmq
+      RABBITMQ_DEFAULT_USER:  guest
+      RABBITMQ_DEFAULT_PASS:  guest
+      RABBITMQ_DEFAULT_VHOST: example
+      VIRTUAL_HOST:           rabbitmq.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT:           15672
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+
+  ### Pusher server ###
+  pusher:
+    image: oanhnn/laravel-echo-server:v2.0.0
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      LARAVEL_ECHO_SERVER_AUTH_HOST:  app.${APP_DOMAIN:-example.local}
+      VIRTUAL_HOST:                   pusher.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT:                   6001
+    networks:
+      - private-net
+    restart: unless-stopped
+
+  ### App Webhook service ###
+  webhook:
+    image: oanhnn/php:7.2-laravel
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+      - api
+    env_file:
+      - .env
+    environment:
+      VIRTUAL_HOST:   webhook.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT:   80
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - .:/var/www/html
+    working_dir: /var/www/html
+
+  ### App Worker service ###
+  worker:
+    image: oanhnn/php:7.2-laravel
+    command: php artisan queue:listen
+    depends_on:
+      - db
+      - redis
+      - minio
+      - rabbitmq
+    env_file:
+      - .env
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - .:/var/www/html
+    working_dir: /var/www/html
+
+  ### App API service ###
+  api:
+    image: oanhnn/php:7.2-laravel
+    depends_on:
+      - db
+      - redis
+      - minio
+      - rabbitmq
+    env_file:
+      - .env
+    environment:
+      VIRTUAL_HOST:   api.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT:   80
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - .:/var/www/html
+
+  ### App Frontend service ###
+  web:
+    image: oanhnn/php:7.2-laravel
+    depends_on:
+      - db
+      - redis
+      - minio
+      - rabbitmq
+      - api
+    env_file:
+      - .env
+    environment:
+      VIRTUAL_HOST:   app.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT:   80
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - .:/var/www/html
+    working_dir: /var/www/html
+
+  ### Admin Frontend service ###
+  admin:
+    image: oanhnn/php:7.2-laravel
+    depends_on:
+      - db
+      - redis
+      - minio
+      - rabbitmq
+      - api
+    env_file:
+      - .env
+    environment:
+      VIRTUAL_HOST: admin.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT: 80
+    networks:
+      - private-net
+    restart: unless-stopped
+    volumes:
+      - .:/var/www/html
+    working_dir: /var/www/html
+
+  ### DB Adminer ###
+  dbadmin:
+    image: adminer
+    depends_on:
+      - db
+    environment:
+      VIRTUAL_HOST:  db.${APP_DOMAIN:-example.local}
+      VIRTUAL_PORT:  8080
+    networks:
+      - private-net
+    restart: unless-stopped
+
+  ### NGINX Proxy ###
+  proxy:
+    image: jwilder/nginx-proxy:alpine
+    networks:
+      - private-net
+      - public-net
+    ports:
+      - "80:80"
+    volumes:
+      - .:/var/www/html
+      - /var/run/docker.sock:/tmp/docker.sock:ro
